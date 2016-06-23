@@ -1,8 +1,146 @@
 import tensorflow as tf
-from tensorflow.models.rnn import rnn_cell
-from tensorflow.models.rnn import seq2seq
+# from tensorflow.models.rnn import rnn_cell
+# from tensorflow.nn.rnn_cell
+# import tensorflow.nn.rnn_cell as rnn_cell
+# from tensorflow.models.rnn import seq2seq
+from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import init_ops
+
+rnn_cell = tf.nn.rnn_cell
+seq2seq = tf.nn.seq2seq
 
 import numpy as np
+
+from tensorflow.python.ops import variable_scope as vs
+
+def _linear_with_normalization(args, gammas, epsilons, output_size, bias, bias_start=0.0, scope=None):
+  """
+  Normolized value is computed bu formua norm_val = beta + gamma * (val - mean) / sqrt(variance + epsilon)
+  Linear map with normalization: norm(sum_i(args[i] * W[i])), where W[i] is a variable.
+  For each tensor will be computed separate normalization.
+
+  Args:
+    args: a 2D Tensor or a list of 2D, batch x n, Tensors.
+    gammas: vector of gamma parameters.
+    output_size: int, second dimension of W[i].
+    bias: boolean, whether to add a bias term or not.
+    bias_start: starting value to initialize the bias; 0 by default.
+    scope: VariableScope for the created subgraph; defaults to "Linear".
+
+  Returns:
+    A 2D Tensor with shape [batch x output_size] equal to
+    sum_i(args[i] * W[i]), where W[i]s are newly created matrices.
+
+  Raises:
+    ValueError: if some of the arguments has unspecified or wrong shape.
+  """
+  if args is None or (rnn_cell._is_sequence(args) and not args):
+    raise ValueError("`args` must be specified")
+  if not rnn_cell._is_sequence(args):
+    args = [args]
+
+  # Calculate the total size of arguments on dimension 1.
+  total_arg_size = 0
+  shapes = [a.get_shape().as_list() for a in args]
+  for shape in shapes:
+    if len(shape) != 2:
+      raise ValueError("Linear is expecting 2D arguments: %s" % str(shapes))
+    if not shape[1]:
+      raise ValueError("Linear expects shape[1] of arguments: %s" % str(shapes))
+    else:
+      total_arg_size += shape[1]
+
+  # Now the computation.
+  with vs.variable_scope(scope or "Linear"):
+    results = 0
+    for i in range(0, len(args)):
+
+        matrix = vs.get_variable("Matrix_" + str(i), [args[i].get_shape().as_list()[1], output_size])
+        res = math_ops.matmul(args[i], matrix)
+
+        mean = math_ops.reduce_mean(res, 0, keep_dims=True)
+        var = math_ops.square(res - mean) + epsilons[i]
+        std = math_ops.sqrt(var)
+        norm_res = gammas[i] * (res - mean / std)
+
+        results += norm_res
+
+    if not bias:
+      return results
+    bias_term = vs.get_variable(
+        "Bias", [output_size],
+        initializer=init_ops.constant_initializer(bias_start))
+  return results + bias_term
+
+
+
+
+def _linear(args, output_size, bias, bias_start=0.0, scope=None):
+  """
+  Normolized value is computed bu formua norm_val = beta + gamma * (val - mean) / sqrt(variance + epsilon)
+  Linear map with normalization: norm(sum_i(args[i] * W[i])), where W[i] is a variable.
+  For each tensor will be computed separate normalization.
+
+  Args:
+    args: a 2D Tensor or a list of 2D, batch x n, Tensors.
+    gammas: vector of gamma parameters.
+    output_size: int, second dimension of W[i].
+    bias: boolean, whether to add a bias term or not.
+    bias_start: starting value to initialize the bias; 0 by default.
+    scope: VariableScope for the created subgraph; defaults to "Linear".
+
+  Returns:
+    A 2D Tensor with shape [batch x output_size] equal to
+    sum_i(args[i] * W[i]), where W[i]s are newly created matrices.
+
+  Raises:
+    ValueError: if some of the arguments has unspecified or wrong shape.
+  """
+  if args is None or (rnn_cell._is_sequence(args) and not args):
+    raise ValueError("`args` must be specified")
+  if not rnn_cell._is_sequence(args):
+    args = [args]
+
+  # Calculate the total size of arguments on dimension 1.
+  total_arg_size = 0
+  shapes = [a.get_shape().as_list() for a in args]
+  for shape in shapes:
+    if len(shape) != 2:
+      raise ValueError("Linear is expecting 2D arguments: %s" % str(shapes))
+    if not shape[1]:
+      raise ValueError("Linear expects shape[1] of arguments: %s" % str(shapes))
+    else:
+      total_arg_size += shape[1]
+
+  # Now the computation.
+  with vs.variable_scope(scope or "Linear"):
+    results = 0
+    for i in range(0, len(args)):
+
+        matrix = vs.get_variable("Matrix_" + str(i), [args[i].get_shape().as_list()[1], output_size])
+        res = math_ops.matmul(args[i], matrix)
+
+        results += res
+
+    if not bias:
+      return results
+    bias_term = vs.get_variable(
+        "Bias", [output_size],
+        initializer=init_ops.constant_initializer(bias_start))
+  return results + bias_term
+
+
+
+
+class ResNetBasicRNNCell(rnn_cell.BasicRNNCell):
+    def __call__(self, inputs, state, scope=None):
+        """Most basic RNN: output = new_state = activation(W * input + U * state + B)."""
+        with vs.variable_scope(scope or type(self).__name__):  # "BasicRNNCell"
+            # RNN_output = self._activation(_linear_with_normalization([inputs, state], gammas=[1, 0.1], epsilons=[0.001, 0.001], output_size=self._num_units, bias=True))
+            RNN_output = self._activation(_linear([inputs, state],   output_size=self._num_units, bias=True))
+            output = RNN_output # + state
+        return output, output
 
 class Model():
     def __init__(self, args, infer=False):
@@ -12,7 +150,8 @@ class Model():
             args.seq_length = 1
 
         if args.model == 'rnn':
-            cell_fn = rnn_cell.BasicRNNCell
+            # cell_fn = rnn_cell.BasicRNNCell
+            cell_fn = ResNetBasicRNNCell
         elif args.model == 'gru':
             cell_fn = rnn_cell.GRUCell
         elif args.model == 'lstm':
